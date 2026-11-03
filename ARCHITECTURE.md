@@ -1,0 +1,27 @@
+# Architecture
+
+**Draft — 2026-11-03.** Proposed contracts, not existing APIs. Links: [spec](SPEC.md), [plan](IMPLEMENTATION_PLAN.md), [verification](VERIFICATION_PLAN.md), [evidence](EVIDENCE.md).
+
+## Boundary and components
+
+`schedule → tank → restriction → prescribed heater → sink`; environment supplies tank heat. Proposed closure: a fixed-volume equilibrium tank flashes total mass `M`, internal energy `U` and volume `V`; liquid and vapor share temperature and bulk pressure. If potential energy is modeled, integrate total stored energy and consistently recover `U` from geometry for the flash. Stratification and finite-rate phase change are omitted. Withdrawal is liquid only; invalid regimes cause a located stop.
+
+**Closure:** ground hold closes an ideal prescribed shutoff; withdrawal opens it fully. With known tank state, fixed sink pressure `p_d`, inlet pressure `p_i`, liquid density `ρ`, fixed area `A`, and coefficient `C`, the only flow unknown obeys `ṁ = C A sqrt(2 ρ (p_i − p_d))` for `p_i > p_d`; otherwise `ṁ = 0` with the one-way branch closed. This is a proposed restricted liquid correlation, not a validated device law. Tank withdrawal and sink outflow both equal `ṁ`. Demand `d` is diagnostic: served = `min(d, ṁ)`, unmet = `d − served`, excess = `ṁ − served`; the sink accepts **all** actual outflow, including excess. Thus `d = served + unmet` and `ṁ = served + excess`; no second equation forces flow to equal demand. Excess is not silently destroyed or described as venting. A prescribed shutoff is not physical feedback control.
+
+The massless heater adds prescribed power after the restriction. Require valid single-phase liquid throughout the restriction and heater, including outlet at `p_d`; stop at flashing, unsupported phase or property failure. Saturated tank liquid may flash on pressure reduction: P0 must demonstrate a nonempty, useful feed envelope, including positive flow, duration, head, heat and heater settings, not assume one. A candidate stationary hydrostatic head, e.g. `p_i ≈ p_bulk + ρgH`, requires specified geometry and an error bound on the approximation; it is not free pressure. If no useful feasible case exists, stop and seek approval to re-scope, not claim v1 works. Pressure-limit stop is not a relief model.
+
+## Contract sketches
+
+- `PropertyProvider.flash(input_pair, values, fluid_id) → {p,T,rho,u,h,phase,quality?, validity, provider_id, reference_id} | PropertyError`. SI: Pa, K, kg/m³, J/kg. Include saturation queries and `u, rho` flash only if verified feasible in P0; quality is defined only for two-phase states. Near saturation use explicit phase/quality, not ambiguous `p,T` guesses. Unsupported, out-of-range, non-convergent, and backend faults are distinguishable. Do not impose a phase merely to suppress failure.
+- `Component.evaluate(state, ports, parameters, t) → {derivatives, algebraic_residuals, boundary_fluxes, guards, diagnostics} | typed_failure`; ports carry signed mass flow, pressure and specific enthalpy; heat/work are signed into the control volume. A schedule transition is not a controller.
+- `simulate(config, schedule, initial_state) → {samples, integrals, event_ledger, status, provenance}`; status distinguishes complete, pressure-limit stop, unavailable-liquid stop, unsupported-phase, property failure, and solver failure. Report actual, served, unmet and excess; if continuation is outside the envelope, terminate and report the unsimulated interval separately.
+
+Pin one fluid, isomer and property reference per run. `u` and `h` share an energy zero and satisfy `h = u + p/rho`; mixing backends requires a demonstrated, recorded offset transformation. Reference shifts change `U` and flow enthalpy consistently, not physical balances. Comparisons align references and fluid assumptions.
+
+## Conservation and solver
+
+For a control volume, `dM/dt = Σ ṁin − Σ ṁout` and `dE/dt = Q̇in + Ẇin + Σ(ṁin e_in) − Σ(ṁout e_out)`, with stored `E = U + E_potential` and port `e = h + gz` when elevation matters. Neglect kinetic energy or potential terms only with a P0-quantified bound in the declared envelope. Sum volumes and cancel internal fluxes; integrate boundary fluxes with accepted-step quadrature. A massless steady heater has `ṁ(h_out − h_in) = Q̇` at fixed elevation, with zero-flow power rejected or separately accounted for; it cannot store energy. Negative mass or failed flashes trigger step rejection or a located stop, never clipping presented as physics.
+
+P1 supplies a minimal error-controlled implicit stiff differential/algebraic integrator, consistent initialization, accepted-step quadrature and rejection of trial state. P2/P3 use it on smooth cases. P4 adds schedule discontinuities, located guard roots, full rollback of caches and tentative ledger entries, and bounded retries. Simultaneous events use deterministic priority: terminal safety/envelope guards, schedule changes, diagnostics. Record pre/post state and actions once.
+
+Ledger entries contain monotonic sequence, time, guard, direction, before/after mode, action, actual/requested flow, and status. A checkpoint includes accepted state, solver history or defined reinitialization policy, cumulative flux integrals, schedule cursor, modes, event sequence, tolerances, configuration and model/provider hashes. Resume validates identity before execution; compare against uninterrupted output within frozen tolerances, not necessarily bitwise.
